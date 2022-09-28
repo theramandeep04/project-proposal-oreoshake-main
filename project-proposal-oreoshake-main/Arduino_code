@@ -1,0 +1,158 @@
+#include <PubSubClient.h>
+#include <WiFi.h>
+#include <ThingSpeak.h>
+#include <NTPClient.h>
+#include "HTTPClient.h"
+
+const int trigPin=15;
+const int echoPin=27;
+const int trigPinHand=25; //initialise later
+const int echoPinHand=26; //initialise later
+const int empty=0;
+
+#define DCwater_pump 8
+
+/*
+        data being sent to thingspeak : 
+ i   -  current water level in the container
+ ii  -  number of times the container became empty 
+ iii -  number of times used by the user
+ iv  -  last epoch time it became empty
+  v  -  average time to become empty
+*/
+
+//For wifi connection
+const char* ssid="vivo V23 5G";
+const char* pass="vivo V23";
+
+//mqtt connection
+const char* server = "mqtt3.thingspeak.com";
+const char* mqttUserName = "FhkaBhQYGhIMIyskFCEOCA0";
+const char* mqttPass = "D3VKjGSZ908UlzLawYu64947";
+const char* clientID = "FhkaBhQYGhIMIyskFCEOCA0";
+
+int port=1883;
+
+long writeChannelID = 1764340;
+
+long duration;
+
+int distance;
+
+//write getTime thing
+WiFiUDP ntpUDP;
+
+NTPClient timeClient(ntpUDP, "pool.ntp.org");
+
+WiFiClient client;
+
+PubSubClient mqttClient(client);
+
+unsigned long getTime() 
+{
+    timeClient.update();
+    unsigned long now=timeClient.getEpochTime();
+    return now; 
+}
+
+void setup() 
+{
+    pinMode(trigPin,OUTPUT); //Sets the trigPin as an Output for water level 
+    pinMode(echoPin,INPUT);  //Sets the echoPin as an Input  for water level
+    pinMode(trigPinHand,OUTPUT);   //Hand Detection
+    pinMode(echoPinHand,INPUT);   //Hand Detection
+    Serial.begin(115200);   
+    WiFi.begin(ssid,pass);
+    while(WiFi.status()!=WL_CONNECTED)
+    {
+        Serial.println("Connecting to WiFi...");
+        delay(1000);
+    }
+    timeClient.begin();
+    Serial.println("WiFi Connected!");
+    mqttClient.setServer(server,port);
+}
+
+void createCI(String& val,String& ae,String& cnt)
+{
+  HTTPClient http;
+  String cse_ip="192.168.216.156";
+  String cse_port="8080";
+  String server="http://"+cse_ip+":"+cse_port+"/~/in-cse/in-name/";
+  http.begin(server + ae + "/" + cnt + "/");
+  http.addHeader("X-M2M-Origin", "admin:admin");
+  http.addHeader("Content-Type", "application/json;ty=4");
+  int code = http.POST("{\"m2m:cin\": {\"cnf\":\"application/json\",\"con\": " + String(val) + "}}");
+  Serial.println(code);
+  if (code == -1) {
+    Serial.println("UNABLE TO CONNECT TO THE SERVER");
+  }
+  http.end();
+}
+
+void sendWaterLevelData()
+{
+   //uploaded to mqtt
+   while(mqttClient.connected()==NULL)
+   {
+        Serial.println("Connecting to mqtt...");
+        mqttClient.connect(clientID,mqttUserName,mqttPass);
+        delay(1000);
+   }   
+   mqttClient.loop();
+   digitalWrite(trigPin,LOW);
+   delayMicroseconds(2);
+   digitalWrite(trigPin,HIGH);
+   
+   delayMicroseconds(10);
+   digitalWrite(trigPin,LOW);
+   long duration=pulseIn(echoPin, HIGH);
+   int distance=duration*0.034/2; 
+   if(distance<=7)
+   {
+      distance=7-distance;
+      Serial.print("waterlevel : ");
+      Serial.println(distance);
+      String dataString="field1="+String(distance);
+      String topicString="channels/"+String(writeChannelID )+"/publish";
+      mqttClient.publish(topicString.c_str(),dataString.c_str());
+      String val=String(distance);
+      String ae="WaterLevelData_";
+      String con="WaterLevel_";
+      createCI(val,ae,con);
+      ae="WaterLevelData_";
+      con="Epoch_";
+      val=String(getTime());
+      createCI(val,ae,con);
+   }
+}
+
+void sendUltrasonicSensorData()
+{
+    digitalWrite(trigPinHand,LOW);
+    delayMicroseconds(2);
+    digitalWrite(trigPinHand,HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPinHand,LOW);
+    duration=pulseIn(echoPinHand,HIGH);
+    distance=duration*0.034/2;
+    Serial.print("Distance of hand: ");
+    Serial.println(distance);
+    if(distance<6)
+    {
+       String val=String(getTime());
+       String ae="UltrasonicSensor_";
+       String con="HandDetection_";
+       createCI(val,ae,con);
+    }
+    delay(1000);
+}
+
+void loop() 
+{
+    Serial.print("Epoch Time: ");
+    Serial.println(getTime());
+    delay(1000);
+    sendWaterLevelData();
+    sendUltrasonicSensorData();
+}
